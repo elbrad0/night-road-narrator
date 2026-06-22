@@ -1,0 +1,13 @@
+# --- Generated at runtime (each user makes their own) ---
+voices/                 # the downloaded voice model (large; get with get-voices.py)
+voices_gender.json      # made by make_gender_map.py
+voices.json             # per-session character casting
+audio_cache/            # cached speech
+audition.wav            # scratch file from audition_voices.py
+
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Old prototype, superseded by nightroad.py (delete before publishing) ---
+server.py
