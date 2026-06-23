@@ -12,6 +12,10 @@ account.
 
 ---
 
+Demonstration Video: https://youtu.be/VMwLpkVF5Ac
+
+---
+
 ## Features
 
 - **Reads the game aloud, fully offline.** All the AI runs locally on your machine.
