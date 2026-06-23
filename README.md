@@ -12,11 +12,18 @@ account.
 
 ---
 
+## Demo Video
+
 <p align="center">
   <a href="https://youtu.be/VMwLpkVF5Ac">
-    <img src="https://img.youtube.com/vi/VMwLpkVF5Ac/maxresdefault.jpg" alt="Night Road AI Narrator Demo" width="80%">
+    <img src="https://img.youtube.com/vi/VMwLpkVF5Ac/maxresdefault.jpg" 
+         alt="Night Road AI Narrator Demo" 
+         width="75%" 
+         style="border-radius: 8px;">
   </a>
 </p>
+
+*Click the image above to watch the demo*
 
 ---
 
