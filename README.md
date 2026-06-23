@@ -12,7 +12,11 @@ account.
 
 ---
 
-Demonstration Video: https://youtu.be/VMwLpkVF5Ac
+<p align="center">
+  <a href="https://youtu.be/VMwLpkVF5Ac">
+    <img src="https://img.youtube.com/vi/VMwLpkVF5Ac/maxresdefault.jpg" alt="Night Road AI Narrator Demo" width="80%">
+  </a>
+</p>
 
 ---
 
