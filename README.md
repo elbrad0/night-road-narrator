@@ -16,7 +16,7 @@ account.
 
 <p align="center">
   <a href="https://youtu.be/VMwLpkVF5Ac">
-    <img src="https://img.youtube.com/vi/VMwLpkVF5Ac/0.jpg" 
+    <img src="https://img.youtube.com/vi/VMwLpkVF5Ac/hqdefault.jpg" 
          alt="Night Road AI Narrator Demo" 
          width="75%" 
          style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
