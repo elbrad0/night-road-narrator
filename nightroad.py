@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import urllib.request
+import wave
 from flask import Flask, request, jsonify
 
 # ============================================================================
@@ -35,14 +36,14 @@ LENGTH_SCALE = 1.1                   # speaking speed: 1.0 = normal, higher = sl
 # speaker index — the value in PARENTHESES on the samples page.
 MODEL = "en_US-libritts_r-medium.onnx"
 VOICES = {
-    "narrator":    f"{MODEL}#899",
-    "protagonist": f"{MODEL}#885",
-    "unknown":     f"{MODEL}#899",
+    "narrator":    f"{MODEL}#22",
+    "protagonist": f"{MODEL}#52",
+    "unknown":     f"{MODEL}#22",
 }
 # Characters are cast from gender-matched pools built from voices_gender.json
 # (produced by make_gender_map.py): a male character draws a male voice, etc.
 GENDER_FILE = "voices_gender.json"
-RESERVED_INDICES = {899, 885}            # narrator + protagonist, kept out of pools
+RESERVED_INDICES = {22, 52}            # narrator + protagonist, kept out of pools
 
 
 def _build_gender_pools():
@@ -94,7 +95,7 @@ PRONUNCIATIONS = {
     "Ventrue": "Ventroo",
     "Giovanni": "Jeeohvahnee",
     "Hecata": "Heckahtaa",
-    "Caitiff": "Kaytiff",
+    "Caitiff": "Kay-tiff",
     "Salubri": "Sahloobree",
     "Cappadocian": "Cappadohseean",
     "Banu Haqim": "Bahnoo Hahkeem",
@@ -251,12 +252,15 @@ def clean_for_speech(text: str) -> str:
     for ch in SYMBOL_STRIP:
         text = text.replace(ch, " ")
     text = text.replace("(", " , ").replace(")", " , ")   # parentheses -> brief pause
-    # em / en dash -> a real sentence break. Capitalise the following word so
-    # the engine treats it as a true full stop and gives a full-length pause
-    # (a lowercase word after a period is NOT treated as a sentence end).
-    text = re.sub(r"[\u2012-\u2015\u2e3a\u2e3b]\s*([A-Za-z])",
-                  lambda m: ". " + m.group(1).upper(), text)
-    text = re.sub(r"[\u2012-\u2015\u2e3a\u2e3b]", ". ", text)   # dash before non-letter
+    # Dash handling. An em-dash (—) is a clause break -> a full sentence pause
+    # (capitalise the next word so the engine treats it as a true full stop).
+    # An en-dash (–) tucked tight between two words or numbers is a compound or
+    # range ("long–dead", "1990–2000") -> read as a hyphen, NOT a sentence break.
+    text = re.sub(r"\u2014\s*([A-Za-z])", lambda m: ". " + m.group(1).upper(), text)
+    text = re.sub(r"\s+[\u2012\u2013\u2015\u2e3a\u2e3b]\s*([A-Za-z])",
+                  lambda m: ". " + m.group(1).upper(), text)        # spaced dash
+    text = re.sub(r"(?<=\w)[\u2012\u2013\u2015\u2e3a\u2e3b](?=\w)", "-", text)  # compound
+    text = re.sub(r"[\u2012-\u2015\u2e3a\u2e3b]", ". ", text)       # any leftover dash
     for word, say in PRONUNCIATIONS.items():
         text = re.sub(rf"\b{re.escape(word)}\b", say, text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
@@ -299,6 +303,20 @@ def voice_for(speaker: str, gender: str, vmap: dict) -> str:
 os.makedirs(CACHE_DIR, exist_ok=True)
 seg_q: "queue.Queue" = queue.Queue()
 play_q: "queue.Queue" = queue.Queue()
+EPOCH = 0                                # bumped on flush; stale items are skipped
+
+
+def flush():
+    """A new page arrived — drop everything still queued from the previous one."""
+    global EPOCH
+    EPOCH += 1
+    for q in (seg_q, play_q):
+        try:
+            while True:
+                q.get_nowait()
+                q.task_done()
+        except queue.Empty:
+            pass
 
 
 def cache_path(voice: str, text: str) -> str:
@@ -331,30 +349,76 @@ def synth(voice: str, text: str) -> str:
     return out
 
 
-def play(wav: str) -> None:
+def wav_duration(path: str) -> float:
+    """Length of a wav in seconds, so async playback knows when it's done."""
+    try:
+        with wave.open(path, "rb") as w:
+            rate = w.getframerate()
+            return w.getnframes() / float(rate) if rate else 0.0
+    except Exception:
+        return 0.0
+
+
+def play(wav: str, epoch: int) -> None:
+    """Play a clip, but bail out the instant a new page arrives (EPOCH bumped)."""
     if not wav or not os.path.exists(wav):
         return
     if platform.system() == "Windows":
-        import winsound
-        winsound.PlaySound(wav, winsound.SND_FILENAME)
+        # Use the Media Control Interface (winmm) rather than winsound: it has a
+        # real 'stop' command and a queryable state, so a new page can cut the
+        # current clip off cleanly (winsound's SND_PURGE doesn't reliably stop).
+        import ctypes
+        winmm = ctypes.windll.winmm
+
+        def mci(cmd: str) -> int:
+            return winmm.mciSendStringW(cmd, None, 0, None)
+
+        alias = "nrclip"
+        mci(f"close {alias}")                                  # clear any stale handle
+        if mci(f'open "{wav}" type waveaudio alias {alias}') != 0:
+            import winsound                                    # fallback: plain play
+            winsound.PlaySound(wav, winsound.SND_FILENAME)
+            return
+        try:
+            mci(f"play {alias}")
+            buf = ctypes.create_unicode_buffer(32)
+            deadline = time.time() + wav_duration(wav) + 1.0   # safety cap
+            while time.time() < deadline:
+                if epoch != EPOCH:                             # Next was clicked
+                    break
+                winmm.mciSendStringW(f"status {alias} mode", buf, 32, None)
+                if buf.value and buf.value != "playing":       # finished naturally
+                    break
+                time.sleep(0.02)
+        finally:
+            mci(f"stop {alias}")
+            mci(f"close {alias}")
     else:
         player = "afplay" if platform.system() == "Darwin" else "aplay"
-        subprocess.run([player, wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen([player, wav],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        while proc.poll() is None:
+            if epoch != EPOCH:
+                proc.terminate()
+                return
+            time.sleep(0.02)
 
 
 def synth_worker():
     while True:
-        voice, text = seg_q.get()
-        play_q.put(synth(voice, text))
+        epoch, voice, text = seg_q.get()
+        if epoch == EPOCH:
+            play_q.put((epoch, synth(voice, text)))
         seg_q.task_done()
 
 
 def play_worker():
     while True:
-        wav = play_q.get()
-        play(wav)
-        if wav:
-            time.sleep(SEGMENT_GAP)
+        epoch, wav = play_q.get()
+        if epoch == EPOCH:
+            play(wav, epoch)
+            if wav and epoch == EPOCH:               # no gap if we were cut off
+                time.sleep(SEGMENT_GAP)
         play_q.task_done()
 
 
@@ -376,9 +440,11 @@ def cors(r):
 def passage():
     if request.method == "OPTIONS":
         return ("", 204)
-    text = (request.get_json(force=True) or {}).get("text", "").strip()
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "").strip()
     if not text:
         return jsonify({"segments": []})
+    flush()        # any new text = the player advanced -> stop the old narration first
 
     print(f"[recv] {len(text)} chars / {text.count(chr(10)) + 1} line(s): {text[:90]!r}")
     vmap = load_voice_map()
@@ -397,7 +463,7 @@ def passage():
             vf = voice_for(sp, seg.get("gender", "?"), vmap)
             spoken = clean_for_speech(seg["text"])
             if spoken:
-                seg_q.put((vf, spoken))
+                seg_q.put((EPOCH, vf, spoken))
                 out_segments.append(seg)
     return jsonify({"segments": out_segments})
 
@@ -413,5 +479,5 @@ if __name__ == "__main__":
     threading.Thread(target=synth_worker, daemon=True).start()
     threading.Thread(target=play_worker, daemon=True).start()
     threading.Thread(target=prewarm, daemon=True).start()
-    print(f"Pipeline ready (v1.0.0) on http://127.0.0.1:{PORT}")
+    print(f"Pipeline ready (v1.1.0) on http://127.0.0.1:{PORT}")
     app.run(host="127.0.0.1", port=PORT)

@@ -2,6 +2,21 @@
 
 All notable changes to **Night Road Narrator**.
 
+## [1.1.0]
+
+### Reading control
+- **Advancing the page now interrupts narration.** Clicking **Next**, making a
+  choice, or opening and closing the menu stops the current line immediately and
+  reads the new text, instead of finishing the old page first — so skipping ahead
+  feels responsive.
+
+### Reading quality
+- **Hyphenated compounds read correctly.** Phrases like "long-dead" no longer get
+  a false full stop in the middle; a true em-dash clause break still gets its pause.
+- **"Caitiff" fixed** — now a crisp "KAY-tiff" instead of slurring toward "Kate".
+
+---
+
 ## [1.0.0] — first public release
 
 A local, offline voice narrator for *Vampire: The Masquerade — Night Road*.

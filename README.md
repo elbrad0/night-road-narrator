@@ -40,6 +40,9 @@ account.
   in the narrator's voice; only real spoken lines get a character voice.
 - **Skips stat and level-up screens** automatically, while still reading any
   story text on the same page.
+- **Click Next to skip ahead.** Advancing a page, making a choice, or opening and
+  closing the menu stops the current line and jumps straight to the new text — no
+  waiting for the old narration to finish.
 - **Natural pacing.** Proper pauses after sentences, between paragraphs, and at
   parentheses and em-dashes — no rushing or run-ons.
 - **Pronunciation dictionary** for *Vampire: The Masquerade* terms (clan names,
@@ -158,6 +161,9 @@ of a session is slow (the AI is waking up); after that it keeps pace.
 
 > **Pause narration** any time with **Ctrl+Alt+N** inside the game (press again
 > to resume) — handy if you want a quiet moment while recording.
+
+> **Skip ahead** by just advancing the game — clicking **Next** or making a choice
+> cuts off the current line and reads the new text straight away.
 
 ### Running it manually (if you prefer)
 
