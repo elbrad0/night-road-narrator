@@ -2,6 +2,7 @@
 voices/                 # the downloaded voice model (large; get with get-voices.py)
 voices_gender.json      # made by make_gender_map.py
 voices.json             # per-session character casting
+volume.json             # remembered narration volume
 audio_cache/            # cached speech
 audition.wav            # scratch file from audition_voices.py
 
