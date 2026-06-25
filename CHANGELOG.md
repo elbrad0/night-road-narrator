@@ -2,6 +2,25 @@
 
 All notable changes to **Night Road Narrator**.
 
+## [1.2.0]
+
+### New
+- **Volume hotkeys.** **Ctrl+Up** / **Ctrl+Down** adjust the narration volume in
+  10% steps, live — the change is heard on the line that's already playing, not
+  just the next one. **0% is a true mute.** The level is remembered between
+  sessions. Only this app's volume in the Windows mixer is touched, so the game
+  and OBS are left alone. (Needs `pycaw` — see the install step.)
+- The console prints the **hotkey list** on startup.
+
+### Fixed
+- **Continued dialogue no longer slips into the narrator's voice.** When a
+  character's speech runs across more than one quote in a turn (split by a tag
+  like "Julian says." or a sentence of narration), every quote now keeps that
+  character's voice instead of the continuation sometimes being read by the
+  narrator.
+
+---
+
 ## [1.1.0]
 
 ### Reading control
