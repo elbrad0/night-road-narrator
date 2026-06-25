@@ -224,6 +224,8 @@ You should hear a short sample with narrator, a character, and "your" voice.
 
 ---
 
+Like my work? Buy me a coffee: https://ko-fi.com/elbrad0
+
 ## Credits
 
 - Speech: [Piper](https://github.com/OHF-Voice/piper1-gpl) with the
