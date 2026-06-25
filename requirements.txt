@@ -2,3 +2,5 @@
 flask
 websocket-client
 piper-tts
+pycaw            # live narration-volume hotkeys (Windows; pulls in comtypes)
+comtypes
