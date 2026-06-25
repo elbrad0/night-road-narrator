@@ -43,6 +43,9 @@ account.
 - **Click Next to skip ahead.** Advancing a page, making a choice, or opening and
   closing the menu stops the current line and jumps straight to the new text — no
   waiting for the old narration to finish.
+- **Volume hotkeys.** **Ctrl+Up** / **Ctrl+Down** raise and lower the narration
+  volume in 10% steps while you play (0% mutes), and the level is remembered
+  between sessions. Only this app's volume changes — the game and OBS are untouched.
 - **Natural pacing.** Proper pauses after sentences, between paragraphs, and at
   parentheses and em-dashes — no rushing or run-ons.
 - **Pronunciation dictionary** for *Vampire: The Masquerade* terms (clan names,
@@ -102,7 +105,7 @@ running `py --version`.
 In Command Prompt, from inside the project folder:
 
 ```
-py -m pip install flask websocket-client piper-tts
+py -m pip install flask websocket-client piper-tts pycaw comtypes
 ```
 
 ### 4. Install Ollama and pull the AI model
@@ -165,6 +168,9 @@ of a session is slow (the AI is waking up); after that it keeps pace.
 > **Skip ahead** by just advancing the game — clicking **Next** or making a choice
 > cuts off the current line and reads the new text straight away.
 
+> **Volume** — **Ctrl+Up** and **Ctrl+Down** change the narration volume in 10%
+> steps while you play (0% mutes); the level is remembered between sessions.
+
 ### Running it manually (if you prefer)
 
 1. In one window: `py nightroad.py` (leave it running).
@@ -212,6 +218,8 @@ You should hear a short sample with narrator, a character, and "your" voice.
   graphics memory is tight and the bigger model keeps reloading.
 - **Repeated download errors (429).** You're being rate-limited — usually a VPN.
   Turn it off and run `py get-voices.py` again; it resumes where it left off.
+- **Volume hotkeys do nothing.** They need `pycaw` — run `py -m pip install pycaw comtypes`.
+  Also click the game window first so it has keyboard focus.
 - **A word is mispronounced.** Add it to `PRONUNCIATIONS` in `nightroad.py`.
 
 ---
