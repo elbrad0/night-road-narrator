@@ -141,6 +141,10 @@ appears in the passage.
 - Use "protagonist" for the player's own spoken lines (cued by "you say/ask/reply").
 - Use "unknown" only if a line is clearly dialogue but you cannot tell who says it.
 - Attribute untagged dialogue by turn-taking, and reuse KNOWN CHARACTER names.
+- A character's speech may span several quotes in one turn, split by a tag like \
+"Julian says." or by a sentence of narration. Every quote in that turn is the \
+SAME speaker — never switch to "narrator" partway through someone speaking. Use \
+"narrator" only for a short emphasised term, never for a whole spoken sentence.
 
 For "gender": the speaker's gender from context — "m" if referred to with \
 he/him or clearly male, "f" if she/her or clearly female, otherwise "?". \
@@ -217,6 +221,24 @@ def is_emphasis(span: str) -> bool:
     return first.islower()
 
 
+def carry_forward_speakers(labels: list[tuple], quotes: list[str]) -> list[tuple]:
+    """Safety net for continued dialogue. Every quote here is real speech (emphasis
+    was filtered out before the model saw it), so a quote the model tagged
+    narrator/unknown that is clearly a spoken sentence almost certainly continues
+    the previous speaker's turn — inherit them so it keeps the right voice. Short
+    quoted terms (no sentence shape) are left alone."""
+    fixed = list(labels)
+    last = None                                  # last identified (name, gender)
+    for i, (name, gender) in enumerate(fixed):
+        if str(name).strip().lower() not in ("narrator", "unknown", ""):
+            last = (name, gender)
+        elif last is not None and i < len(quotes):
+            inner = quote_inner(quotes[i])
+            if len(inner.split()) > 4 or inner.rstrip()[-1:] in "?!":
+                fixed[i] = last                  # continuation -> previous speaker
+    return fixed
+
+
 def segment_passage(text: str) -> list[dict]:
     """Split locally; the model only labels real dialogue. Text is never lost."""
     spans = split_quotes(text)
@@ -225,6 +247,7 @@ def segment_passage(text: str) -> list[dict]:
         return [{"speaker": "narrator", "gender": "?", "text": text}]
 
     labels = attribute_quotes(text, dialogue, list(KNOWN))
+    labels = carry_forward_speakers(labels, dialogue)
     print(f"[attr] {len(dialogue)} line(s) -> {labels}")
     segs, qi = [], 0
     for s in spans:
@@ -305,6 +328,9 @@ seg_q: "queue.Queue" = queue.Queue()
 play_q: "queue.Queue" = queue.Queue()
 EPOCH = 0                                # bumped on flush; stale items are skipped
 
+VOL_FILE = "volume.json"                 # remembers the volume between sessions
+VOLUME = 100                             # 0-100; applied to every clip as it plays
+
 
 def flush():
     """A new page arrived — drop everything still queued from the previous one."""
@@ -317,6 +343,70 @@ def flush():
                 q.task_done()
         except queue.Empty:
             pass
+
+
+def load_volume():
+    """Restore the saved volume on startup (defaults to 100%)."""
+    global VOLUME
+    try:
+        with open(VOL_FILE, encoding="utf-8") as f:
+            VOLUME = int(json.load(f).get("volume", 100))
+    except Exception:
+        VOLUME = 100
+    VOLUME = max(0, min(100, VOLUME))
+
+
+def save_volume():
+    try:
+        with open(VOL_FILE, "w", encoding="utf-8") as f:
+            json.dump({"volume": VOLUME}, f)
+    except Exception as e:
+        print("[volume] could not save:", e)
+
+
+_vol_session = None                      # ISimpleAudioVolume iface | None (retry) | False (give up)
+_vol_last = None                         # last level actually pushed to the mixer
+_vol_warned = False
+
+
+def _acquire_session():
+    """Find this process's entry in the Windows volume mixer."""
+    from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+    pid = os.getpid()
+    for s in AudioUtilities.GetAllSessions():
+        if s.Process and s.Process.pid == pid:
+            return s._ctl.QueryInterface(ISimpleAudioVolume)
+    return None
+
+
+def apply_volume():
+    """Push the current VOLUME to this app's mixer slider, live. Called every poll
+    while a clip plays, so a hotkey is heard at once. Cheap once the session is
+    cached; retries until the session exists; gives up quietly if pycaw is absent.
+    Controls only our process — the game and OBS are untouched."""
+    global _vol_session, _vol_last, _vol_warned
+    if platform.system() != "Windows" or _vol_session is False:
+        return
+    if _vol_session is not None and _vol_last == VOLUME:
+        return                                       # already at this level
+    try:
+        if _vol_session is None:
+            _vol_session = _acquire_session()        # may be None if not registered yet
+        if _vol_session:
+            _vol_session.SetMasterVolume(VOLUME / 100.0, None)
+            _vol_last = VOLUME
+    except Exception:
+        try:
+            _vol_session = _acquire_session()        # session recreated -> re-acquire once
+            if _vol_session:
+                _vol_session.SetMasterVolume(VOLUME / 100.0, None)
+                _vol_last = VOLUME
+        except Exception as e:
+            _vol_session = False                     # pycaw unusable -> stop trying
+            if not _vol_warned:
+                print("[volume] live volume needs pycaw — run:  py -m pip install pycaw comtypes")
+                print("        (", e, ")")
+                _vol_warned = True
 
 
 def cache_path(voice: str, text: str) -> str:
@@ -360,7 +450,9 @@ def wav_duration(path: str) -> float:
 
 
 def play(wav: str, epoch: int) -> None:
-    """Play a clip, but bail out the instant a new page arrives (EPOCH bumped)."""
+    """Play a clip, but bail out the instant a new page arrives (EPOCH bumped).
+    Volume is applied live to the mixer while it plays, so a hotkey is heard at
+    once rather than waiting for the next clip."""
     if not wav or not os.path.exists(wav):
         return
     if platform.system() == "Windows":
@@ -386,6 +478,7 @@ def play(wav: str, epoch: int) -> None:
             while time.time() < deadline:
                 if epoch != EPOCH:                             # Next was clicked
                     break
+                apply_volume()                                 # live volume (cheap when unchanged)
                 winmm.mciSendStringW(f"status {alias} mode", buf, 32, None)
                 if buf.value and buf.value != "playing":       # finished naturally
                     break
@@ -413,6 +506,12 @@ def synth_worker():
 
 
 def play_worker():
+    if platform.system() == "Windows":
+        try:
+            import comtypes
+            comtypes.CoInitialize()              # COM lives in this one thread (for pycaw)
+        except Exception:
+            pass
     while True:
         epoch, wav = play_q.get()
         if epoch == EPOCH:
@@ -468,6 +567,22 @@ def passage():
     return jsonify({"segments": out_segments})
 
 
+@app.route("/volume", methods=["POST", "OPTIONS"])
+def volume():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    global VOLUME
+    data = request.get_json(force=True) or {}
+    if "set" in data:
+        VOLUME = int(data["set"])
+    else:
+        VOLUME = VOLUME + int(data.get("delta", 0))
+    VOLUME = max(0, min(100, VOLUME))        # clamp 0-100, in 10% steps from the keys
+    save_volume()
+    print(f"[volume] {VOLUME}%")
+    return jsonify({"volume": VOLUME})
+
+
 def prewarm():
     """Load the model into memory at startup so the first page isn't slow."""
     attribute_quotes('"Hello," she said.', ['"Hello,"'], [])
@@ -476,8 +591,13 @@ def prewarm():
 
 
 if __name__ == "__main__":
+    load_volume()
     threading.Thread(target=synth_worker, daemon=True).start()
     threading.Thread(target=play_worker, daemon=True).start()
     threading.Thread(target=prewarm, daemon=True).start()
-    print(f"Pipeline ready (v1.1.0) on http://127.0.0.1:{PORT}")
+    print(f"Pipeline ready (v1.2.0) on http://127.0.0.1:{PORT}  |  volume {VOLUME}%")
+    print("  Hotkeys (focus the game window first):")
+    print("    Ctrl+Alt+N   pause / resume narration")
+    print("    Ctrl+Up      volume up    (+10%)")
+    print("    Ctrl+Down    volume down  (-10%)")
     app.run(host="127.0.0.1", port=PORT)
