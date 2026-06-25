@@ -224,7 +224,19 @@ You should hear a short sample with narrator, a character, and "your" voice.
 
 ---
 
-Like my work? Buy me a coffee: https://ko-fi.com/elbrad0
+## Support
+
+This is free and will stay that way. If it's added something to your
+playthroughs and you'd like to chip in, a coffee is always appreciated — never
+expected.
+
+<p align="center">
+  <a href="https://ko-fi.com/elbrad0">
+    <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi">
+  </a>
+</p>
+
+---
 
 ## Credits
 
