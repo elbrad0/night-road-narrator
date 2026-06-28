@@ -43,11 +43,19 @@ account.
 - **Click Next to skip ahead.** Advancing a page, making a choice, or opening and
   closing the menu stops the current line and jumps straight to the new text — no
   waiting for the old narration to finish.
+- **Reads your choices aloud.** When you select a decision it's read in the
+  narrator's voice; picking a different option cuts the old one off and reads the
+  new. Stray clicks and re-focusing the window no longer skip you past the
+  dialogue.
 - **Volume hotkeys.** **Ctrl+Up** / **Ctrl+Down** raise and lower the narration
   volume in 10% steps while you play (0% mutes), and the level is remembered
   between sessions. Only this app's volume changes — the game and OBS are untouched.
 - **Natural pacing.** Proper pauses after sentences, between paragraphs, and at
-  parentheses and em-dashes — no rushing or run-ons.
+  parentheses and em-dashes, with an even, consistent beat at every comma — no
+  rushing or run-ons.
+- **Numbers, times and dates read properly.** "650" is spoken "six hundred and
+  fifty", "6:05 a.m." becomes "six oh five", and road signs like "I-10" read as
+  "I ten" instead of being slurred together.
 - **Pronunciation dictionary** for *Vampire: The Masquerade* terms (clan names,
   jargon) so they're said correctly.
 - **Audio caching** so repeated lines play instantly.
@@ -188,9 +196,10 @@ You should hear a short sample with narrator, a character, and "your" voice.
 
 - **Speed & pacing:** near the top of `nightroad.py`, `LENGTH_SCALE` sets the
   speaking speed (1.0 = normal, higher = slower), `SENTENCE_SILENCE` is the pause
-  after each sentence, and `SEGMENT_GAP` is the gap between paragraphs and voice
-  changes. Nudge them to taste and restart — lower the last two together if it
-  feels too stop-start.
+  after each sentence, `COMMA_SILENCE` is the shorter pause at commas and clauses
+  (set it to 0 to turn comma pauses off), and `SEGMENT_GAP` is the gap between
+  paragraphs and voice changes. Nudge them to taste and restart — lower them
+  together if it feels too stop-start.
 - **Faster AI (less delay):** pull the smaller model with
   `ollama pull llama3.2:3b`, then change the `OLLAMA_MODEL` line near the top of
   `nightroad.py` to `"llama3.2:3b"` and restart. Slightly less accurate at

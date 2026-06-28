@@ -6,6 +6,7 @@ in different voices, caching as it goes. Only the CONFIG block needs touching.
 """
 
 import hashlib
+import io
 import json
 import os
 import platform
@@ -29,6 +30,7 @@ OLLAMA_KEEPALIVE = -1                # -1 = keep the model loaded indefinitely
 PIPER_CMD = [sys.executable, "-m", "piper"]
 VOICES_DIR = "voices"
 SENTENCE_SILENCE = 0.4               # pause after each sentence (period rush fix)
+COMMA_SILENCE = 0.18                 # pause at commas/clauses (set 0 to disable)
 SEGMENT_GAP = 0.35                   # pause between chunks (a breath between lines)
 LENGTH_SCALE = 1.1                   # speaking speed: 1.0 = normal, higher = slower
 
@@ -80,6 +82,32 @@ def _build_gender_pools():
 
 MALE_POOL, FEMALE_POOL = _build_gender_pools()
 
+# Session memory of each character's gender, learned from any passage where the
+# model is confident. A name's gender is stable, but a single passage often
+# lacks the he/she cue (it was on an earlier page), so we remember it and stop
+# guessing wrong. Drives re-casting if an early '?' guess put them in the wrong
+# pool. Names are keyed lower-case.
+SPEAKER_GENDER: dict = {}
+_MALE_SET = set(MALE_POOL)
+_FEMALE_SET = set(FEMALE_POOL)
+LAST_PASSAGE = ""                       # previous passage text, fed as gender/identity context
+
+
+def _voice_gender(voice: str) -> str:
+    if voice in _FEMALE_SET:
+        return "f"
+    if voice in _MALE_SET:
+        return "m"
+    return "?"
+
+
+def remember_genders(labels: list) -> None:
+    """Record confident m/f genders from a passage's attributions."""
+    for name, gender in labels:
+        nm = str(name).strip().lower()
+        if gender in ("m", "f") and nm not in ("narrator", "unknown", ""):
+            SPEAKER_GENDER[nm] = gender
+
 # Pronunciation fixes (whole-word, case-insensitive), spelled how they sound.
 # These are first-pass guesses — listen and tell me which to tweak or remove.
 PRONUNCIATIONS = {
@@ -99,6 +127,8 @@ PRONUNCIATIONS = {
     "Salubri": "Sahloobree",
     "Cappadocian": "Cappadohseean",
     "Banu Haqim": "Bahnoo Hahkeem",
+    "Assamite": "Assa-mite",
+    "Assamites": "Assa-mites",
     # society & terminology
     "Camarilla": "Cammarilla",
     "Kine": "kyne",
@@ -110,6 +140,15 @@ PRONUNCIATIONS = {
     "Vinculum": "Vinkewlum",
     "Vaulderie": "Vawlderee",
     "antitribu": "anteetreeboo",
+    "Larvae": "Lar-vay",
+    # general-English words Piper mishandles (espeak gets them right; Piper diverges)
+    "teenagers": "teen agers",
+    "teenager": "teen ager",
+    "Instagram": "insta gram",
+    "courier": "koorier",
+    "couriers": "kooriers",
+    "carrying": "carreeng",
+    "misdirection": "mizdirection",
 }
 
 SYMBOL_STRIP = "\u25cf\u25cb\u25c9\u2022\u25e6\u25c6\u25c7\u25aa\u25ab\u25a0\u25a1\u2605\u2606\u2b24\u25b2\u25bc"
@@ -168,12 +207,16 @@ def is_quote(span: str) -> bool:
     return bool(span) and span[0] in QUOTE_CHARS
 
 
-def attribute_quotes(passage: str, quotes: list[str], known: list[str]) -> list[tuple]:
+def attribute_quotes(passage: str, quotes: list[str], known: list[str],
+                     context: str = "") -> list[tuple]:
     """Ask the model who speaks each quote and their gender.
     Returns a list of (name, gender) in quote order; gender is 'm'/'f'/'?'."""
     qlist = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(quotes))
     chars = ", ".join(sorted(known)) or "(none yet)"
-    user = f"KNOWN CHARACTERS: {chars}\n\nPASSAGE:\n{passage}\n\nQUOTES:\n{qlist}"
+    ctx = (f"RECENT CONTEXT (earlier text, for working out who a speaker is and "
+           f"their gender — do NOT attribute quotes to it):\n{context}\n\n"
+           if context.strip() else "")
+    user = f"KNOWN CHARACTERS: {chars}\n\n{ctx}PASSAGE:\n{passage}\n\nQUOTES:\n{qlist}"
     body = json.dumps({
         "model": OLLAMA_MODEL,
         "stream": False,
@@ -241,13 +284,17 @@ def carry_forward_speakers(labels: list[tuple], quotes: list[str]) -> list[tuple
 
 def segment_passage(text: str) -> list[dict]:
     """Split locally; the model only labels real dialogue. Text is never lost."""
+    global LAST_PASSAGE
     spans = split_quotes(text)
     dialogue = [s for s in spans if is_quote(s) and not is_emphasis(s)]
     if not dialogue:                       # no real speech -> all narration
+        LAST_PASSAGE = text[-500:]         # keep as context for the next passage
         return [{"speaker": "narrator", "gender": "?", "text": text}]
 
-    labels = attribute_quotes(text, dialogue, list(KNOWN))
+    labels = attribute_quotes(text, dialogue, list(KNOWN), context=LAST_PASSAGE)
     labels = carry_forward_speakers(labels, dialogue)
+    remember_genders(labels)               # learn genders so we stop guessing wrong
+    LAST_PASSAGE = text[-500:]
     print(f"[attr] {len(dialogue)} line(s) -> {labels}")
     segs, qi = [], 0
     for s in spans:
@@ -271,6 +318,89 @@ def segment_passage(text: str) -> list[dict]:
 # ============================================================================
 # SPEECH CLEAN-UP
 # ============================================================================
+# ---------------------------------------------------------------------------
+# Numbers -> words. Piper's built-in digit expansion mangles the cadence
+# ("650" comes out "six<pause>hundredfifty"), so we spell numbers out as plain
+# British-style words before synthesis and let the engine read them normally.
+# ---------------------------------------------------------------------------
+_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+         "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+         "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+         "eighty", "ninety"]
+_SCALES = [(1_000_000_000, "billion"), (1_000_000, "million"),
+           (1_000, "thousand"), (100, "hundred")]
+_ORDINAL_IRREG = {"one": "first", "two": "second", "three": "third",
+                  "five": "fifth", "eight": "eighth", "nine": "ninth",
+                  "twelve": "twelfth"}
+
+
+def _int_to_words(n: int) -> str:
+    if n < 0:
+        return "minus " + _int_to_words(-n)
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        return _TENS[n // 10] + (" " + _ONES[n % 10] if n % 10 else "")
+    for value, name in _SCALES:
+        if n >= value:
+            head, rem = _int_to_words(n // value), n % value
+            out = head + " " + name
+            if rem:                                   # British 'and' before a sub-100 tail
+                out += (" and " if rem < 100 else " ") + _int_to_words(rem)
+            return out
+    return _ONES[n]
+
+
+def _ordinal_words(n: int) -> str:
+    w = _int_to_words(n)
+    last = w.split()[-1].split("-")[-1]
+    if last in _ORDINAL_IRREG:
+        return w[: len(w) - len(last)] + _ORDINAL_IRREG[last]
+    if last.endswith("y"):                            # twenty -> twentieth
+        return w[:-1] + "ieth"
+    return w + "th"
+
+
+def numbers_to_words(text: str) -> str:
+    text = re.sub(r"\b(\d+)(?:st|nd|rd|th)\b",
+                  lambda m: _ordinal_words(int(m.group(1))), text, flags=re.IGNORECASE)
+
+    def card(m):
+        whole, frac = m.group(1).replace(",", ""), m.group(2)
+        try:
+            words = _int_to_words(int(whole))
+        except (ValueError, OverflowError):
+            return m.group(0)
+        if frac:
+            words += " point " + " ".join(_ONES[int(d)] for d in frac)
+        return words
+    return re.sub(r"\b(\d[\d,]*)(?:\.(\d+))?\b", card, text)
+
+
+def _time_to_words(text: str) -> str:
+    """Clock times: '6:05' -> 'six oh five', '6:41' -> 'six forty one', '6:00' -> 'six'.
+    Runs before number expansion so the colon never becomes a spurious pause."""
+    def repl(m):
+        h, mnt = int(m.group(1)), int(m.group(2))
+        if not (0 <= h <= 23 and 0 <= mnt <= 59):
+            return m.group(0)                     # not a real time -> leave alone
+        hw = _int_to_words(h)
+        if mnt == 0:
+            return hw
+        if mnt < 10:
+            return f"{hw} oh {_int_to_words(mnt)}"
+        return f"{hw} {_int_to_words(mnt)}"
+    return re.sub(r"\b(\d{1,2}):(\d{2})\b", repl, text)
+
+
+def highways_to_words(text: str) -> str:
+    """Road designations like 'I-10' read as 'eyeten' because the hyphen welds
+    them. Split the letter off so it reads 'I ten'. Single-letter routes only
+    (I-10, I-19); multi-letter ones (US-60) can be added if they come up."""
+    return re.sub(r"\b([A-Z])-(\d{1,4})\b", r"\1 \2", text)
+
+
 def clean_for_speech(text: str) -> str:
     for ch in SYMBOL_STRIP:
         text = text.replace(ch, " ")
@@ -284,6 +414,9 @@ def clean_for_speech(text: str) -> str:
                   lambda m: ". " + m.group(1).upper(), text)        # spaced dash
     text = re.sub(r"(?<=\w)[\u2012\u2013\u2015\u2e3a\u2e3b](?=\w)", "-", text)  # compound
     text = re.sub(r"[\u2012-\u2015\u2e3a\u2e3b]", ". ", text)       # any leftover dash
+    text = highways_to_words(text)                                  # I-10 -> I 10 (gap)
+    text = _time_to_words(text)                                     # 6:05 -> six oh five
+    text = numbers_to_words(text)                                   # 650 -> six hundred and fifty
     for word, say in PRONUNCIATIONS.items():
         text = re.sub(rf"\b{re.escape(word)}\b", say, text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
@@ -305,9 +438,19 @@ def load_voice_map() -> dict:
 
 
 def voice_for(speaker: str, gender: str, vmap: dict) -> str:
-    if speaker not in vmap:
-        used = set(vmap.values())
-        pool = FEMALE_POOL if gender == "f" else MALE_POOL   # '?' defaults to male
+    nm = speaker.strip().lower()
+    # a remembered, confident gender beats this passage's guess (incl. a bare '?')
+    eff = SPEAKER_GENDER.get(nm) or (gender if gender in ("m", "f") else "?")
+
+    cur = vmap.get(speaker)
+    recast = False
+    if cur is not None and eff in ("m", "f") and _voice_gender(cur) not in ("?", eff):
+        cur = None                         # locked to the wrong gender -> re-cast
+        recast = True
+
+    if cur is None:
+        used = {v for k, v in vmap.items() if k != speaker}
+        pool = FEMALE_POOL if eff == "f" else MALE_POOL      # '?' still defaults male
         nxt = next((v for v in pool if v not in used), None)
         if nxt is None:                    # pool exhausted -> borrow from the other
             other = MALE_POOL if pool is FEMALE_POOL else FEMALE_POOL
@@ -315,8 +458,9 @@ def voice_for(speaker: str, gender: str, vmap: dict) -> str:
                        pool[0] if pool else VOICES["unknown"])
         vmap[speaker] = nxt
         json.dump(vmap, open(VOICE_FILE, "w"), indent=2)
-        tag = {"m": "male", "f": "female"}.get(gender, "gender unknown -> male")
-        print(f"[voice] new character '{speaker}' ({tag}) -> {nxt}")
+        tag = {"m": "male", "f": "female"}.get(eff, "gender unknown -> male")
+        verb = "recast" if recast else "new character"
+        print(f"[voice] {verb} '{speaker}' ({tag}) -> {nxt}")
     return vmap[speaker]
 
 
@@ -417,19 +561,96 @@ def cache_path(voice: str, text: str) -> str:
     return os.path.join(CACHE_DIR, key + ".wav")
 
 
-def synth(voice: str, text: str) -> str:
-    out = cache_path(voice, text)
-    if os.path.exists(out):
-        return out
-    model_file, _, speaker = voice.partition("#")
-    model = os.path.join(VOICES_DIR, model_file)
-    cmd = PIPER_CMD + ["-m", model]
+_PIPER_VOICES = {}                     # model_path -> loaded PiperVoice (kept resident)
+_PIPER_LOCK = threading.Lock()
+_PIPER_INPROCESS = True                # flips False if the in-process API isn't usable
+
+
+def _sentences(text: str) -> list[str]:
+    return [p for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+
+
+def _clauses(sentence: str) -> list[str]:
+    """Split a sentence at commas / semicolons / colons so each clause can be
+    synthesised on its own and given a uniform short pause. Piper's own comma
+    timing is erratic — sometimes a beat, sometimes none — so we take it over."""
+    return [c.strip() for c in re.split(r"\s*[,;:]\s+", sentence) if c.strip()]
+
+
+def _speech_segments(text: str) -> list[tuple]:
+    """Yield (clause, trailing_silence_seconds). Full stops get SENTENCE_SILENCE,
+    internal commas get the smaller COMMA_SILENCE, the very last clause gets none."""
+    segs, sents = [], _sentences(text) or [text]
+    for si, sent in enumerate(sents):
+        clauses = (_clauses(sent) if COMMA_SILENCE else [sent]) or [sent]
+        for ci, clause in enumerate(clauses):
+            last_in_sent = ci == len(clauses) - 1
+            last_overall = last_in_sent and si == len(sents) - 1
+            if last_overall:
+                gap = 0.0
+            elif last_in_sent:
+                gap = SENTENCE_SILENCE
+            else:
+                gap = COMMA_SILENCE
+            segs.append((clause, gap))
+    return segs
+
+
+def _get_voice(model_path: str):
+    """Load a Piper voice once and keep it in memory (no per-line model reload)."""
+    pv = _PIPER_VOICES.get(model_path)
+    if pv is None:
+        with _PIPER_LOCK:                          # double-checked: load only once
+            pv = _PIPER_VOICES.get(model_path)
+            if pv is None:
+                from piper import PiperVoice
+                pv = PiperVoice.load(model_path)
+                _PIPER_VOICES[model_path] = pv
+                print(f"[synth] Piper loaded in-process (resident): {os.path.basename(model_path)}")
+    return pv
+
+
+def _synth_inprocess(model_path: str, speaker: str, text: str, out: str) -> None:
+    """Synthesize with the resident voice. The in-process API has no
+    sentence-silence option, so we synth each sentence and splice the same pause
+    between them that the CLI's --sentence-silence gave us."""
+    from piper import SynthesisConfig
+    pv = _get_voice(model_path)
+    cfg = SynthesisConfig(
+        speaker_id=int(speaker) if speaker else None,
+        length_scale=float(LENGTH_SCALE),
+    )
+    pieces, params = [], None
+    segs = _speech_segments(text) or [(text, 0.0)]
+    for clause, gap in segs:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            pv.synthesize_wav(clause, wf, cfg)
+        buf.seek(0)
+        with wave.open(buf, "rb") as wr:
+            if params is None:
+                params = wr.getparams()
+            pieces.append(wr.readframes(wr.getnframes()))
+        if gap > 0 and params is not None:
+            pieces.append(b"\x00" * (params.sampwidth * params.nchannels
+                                     * int(params.framerate * gap)))
+    if params is None:
+        raise RuntimeError("no audio produced")
+    tmp = out + ".tmp"
+    with wave.open(tmp, "wb") as wf:
+        wf.setparams(params)
+        wf.writeframes(b"".join(pieces))
+    os.replace(tmp, out)                            # atomic: out only appears complete
+
+
+def _synth_cli(model_path: str, speaker: str, text: str, out: str) -> str:
+    """Fallback: the original per-call Piper CLI (slower, but always works)."""
+    cmd = PIPER_CMD + ["-m", model_path]
     if speaker:
         cmd += ["-s", speaker]
     if SENTENCE_SILENCE:
         cmd += ["--sentence-silence", str(SENTENCE_SILENCE)]
-    cmd += ["--length-scale", str(LENGTH_SCALE)]
-    cmd += ["-f", out, "--", text]
+    cmd += ["--length-scale", str(LENGTH_SCALE), "-f", out, "--", text]
     try:
         subprocess.run(cmd, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -437,6 +658,23 @@ def synth(voice: str, text: str) -> str:
         print("[synth] piper failed:", e)
         return ""
     return out
+
+
+def synth(voice: str, text: str) -> str:
+    out = cache_path(voice, text)
+    if os.path.exists(out):
+        return out
+    model_file, _, speaker = voice.partition("#")
+    model_path = os.path.join(VOICES_DIR, model_file)
+    global _PIPER_INPROCESS
+    if _PIPER_INPROCESS:
+        try:
+            _synth_inprocess(model_path, speaker, text, out)
+            return out
+        except Exception as e:
+            _PIPER_INPROCESS = False                # API mismatch / load issue -> CLI
+            print("[synth] in-process Piper unavailable -> using CLI from now on. Reason:", e)
+    return _synth_cli(model_path, speaker, text, out)
 
 
 def wav_duration(path: str) -> float:
@@ -583,10 +821,62 @@ def volume():
     return jsonify({"volume": VOLUME})
 
 
+@app.route("/choice", methods=["POST", "OPTIONS"])
+def choice():
+    """Read a selected decision aloud in the narrator's voice. Selecting a
+    different choice flushes first, so the old one is cut off and the new one
+    plays — same behaviour as advancing a page. Always narrator: the whole
+    choice (quotes and all) is read in one voice, with no speaker attribution."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"ok": True})
+    flush()                                  # cut off the previous choice / narration
+    print(f"[choice] {text[:90]!r}")
+    spoken = re.sub(r"\s*\[[^\]]*\]", "", text).strip() or text   # drop [STR+Athletics] tags
+    spoken = clean_for_speech(spoken)
+    if spoken:
+        seg_q.put((EPOCH, VOICES["narrator"], spoken))
+    return jsonify({"ok": True})
+
+
+@app.route("/debug", methods=["POST", "OPTIONS"])
+def debug():
+    """Print whatever the watcher sends to the pipeline console — used to capture
+    the choice DOM when right-click inspect is unavailable in the game."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(force=True) or {}
+    print("\n==== [debug] watcher dump | radios found:", data.get("radios"), "====")
+    print(data.get("info", "")[:4000])
+    print("==== [end debug] ====\n")
+    return jsonify({"ok": True})
+
+
 def prewarm():
-    """Load the model into memory at startup so the first page isn't slow."""
+    """Warm the model + speech engine so the first line isn't slow, and report
+    whether Piper is running in-process (resident) or has fallen back to the CLI.
+    Runs a real synth (bypassing the cache) so the status always prints."""
+    global _PIPER_INPROCESS
     attribute_quotes('"Hello," she said.', ['"Hello,"'], [])
-    synth(VOICES["narrator"], "Ready.")          # warm the speech engine too
+    if _PIPER_INPROCESS:
+        probe = os.path.join(CACHE_DIR, "_prewarm.wav")
+        try:
+            v = VOICES["narrator"]
+            _synth_inprocess(os.path.join(VOICES_DIR, v.partition("#")[0]),
+                             v.partition("#")[2], "Ready.", probe)
+        except Exception as e:
+            _PIPER_INPROCESS = False
+            print("[synth] in-process Piper unavailable -> using CLI. Reason:", e)
+        finally:
+            try:
+                os.remove(probe)
+            except OSError:
+                pass
+    if not _PIPER_INPROCESS:
+        synth(VOICES["narrator"], "Ready.")      # CLI path: warm + cache the clip
     print("[prewarm] model loaded and ready")
 
 
@@ -595,7 +885,7 @@ if __name__ == "__main__":
     threading.Thread(target=synth_worker, daemon=True).start()
     threading.Thread(target=play_worker, daemon=True).start()
     threading.Thread(target=prewarm, daemon=True).start()
-    print(f"Pipeline ready (v1.2.0) on http://127.0.0.1:{PORT}  |  volume {VOLUME}%")
+    print(f"Pipeline ready (v1.3.0) on http://127.0.0.1:{PORT}  |  volume {VOLUME}%")
     print("  Hotkeys (focus the game window first):")
     print("    Ctrl+Alt+N   pause / resume narration")
     print("    Ctrl+Up      volume up    (+10%)")
