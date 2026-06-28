@@ -2,6 +2,44 @@
 
 All notable changes to **Night Road Narrator**.
 
+## [1.3.0]
+
+### New
+- **Choices are read aloud.** Selecting a decision reads it in the narrator's
+  voice; picking a different option cuts the old one off and reads the new. Stat
+  tags like `[STR+Athletics]` are stripped so only the choice text is spoken.
+- **Numbers, times and dates read naturally.** Digits are spelled out before
+  synthesis, British style, so "650" is read "six hundred and fifty" instead of
+  the old clipped "six-hundredfifty". Clock times ("6:05 a.m." becomes "six oh
+  five"), ordinals ("3rd" to "third") and interstate signs ("I-10" to "I ten")
+  are handled too.
+- **Consistent comma pacing.** Every comma, semicolon and colon now gets the same
+  short pause, so long sentences no longer rush some clauses and breathe on
+  others. The length is one setting (`COMMA_SILENCE`) near the top of
+  `nightroad.py`; set it to 0 to switch it off.
+- **Characters keep the right gender across pages.** Each character's gender is
+  remembered from any passage that makes it clear, and the previous page is fed
+  in as context, so a character whose only he/she cue was on an earlier page is no
+  longer mis-cast on their first spoken line. If an early guess does land wrong,
+  the voice re-casts to the correct one as soon as the gender becomes clear.
+- **Ctrl+Alt+D** dumps the choice area to the pipeline console — a diagnostic for
+  when the game's right-click inspector is disabled.
+
+### Reading quality
+- **Faster speech.** The voice model is now kept resident in memory instead of
+  reloaded for every line, so narration starts noticeably sooner. It falls back
+  to the old per-line method automatically if anything goes wrong.
+- **More pronunciations fixed:** Assamite ("ASS-uh-mite"), Larvae, courier,
+  carrying, misdirection, teenagers and Instagram.
+
+### Fixed
+- **Mis-clicks no longer skip the dialogue.** A re-focus click (clicking off the
+  window and back to use the hotkeys), an accidental click, or clicking **Next**
+  used to jump to reading the pre-selected top option. A choice is now only read
+  when you click that specific option, so stray clicks are ignored.
+
+---
+
 ## [1.2.0]
 
 ### New
